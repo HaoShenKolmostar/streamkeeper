@@ -14,7 +14,7 @@ from streamer_keeper_config import (
 
 MCU_VIRTUAL_COM_FLAG = 'MCU VIRTUAL COM'
 LOOP_INTERVAL = 20
-LOAD_AXF_INTERVAL = 10
+LOAD_AXF_INTERVAL = 2
 TIME_DELTA_TOLERANCE = 1
 
 
@@ -33,7 +33,7 @@ def load_axf():
 
 
 def run_streamer(port):
-    command = './{} {} >> streamer.log'.format(
+    command = './{} {}'.format(
         BIN_NAME, port
     )
     return system_call(command) == 0
@@ -77,7 +77,7 @@ def handle_collect_folder():
             continue
 
 
-def kill_progresses():
+def kill_streamer_progresses():
     port = get_mcu_virturl_com()
     psaux_out = os.popen(
         "ps aux | grep \'{} {}\'".format(BIN_NAME, port)).read()
@@ -88,6 +88,12 @@ def kill_progresses():
         if port in line and GREP_FLAG not in line:
             pid = int(line.split()[1])
             os.kill(pid, signal.SIGKILL)
+    print('Thread killed...')
+
+
+def count_collected_files():
+    collected_files = os.listdir(COLLECT_FOLDER)
+    return len(collected_files)
 
 
 class CollectThread(threading.Thread):
@@ -102,6 +108,7 @@ class CollectThread(threading.Thread):
 class Worker:
     def __init__(self):
         self.thread = None
+        self.port = None
 
     def run_start_loop(self):
         while(True):
@@ -110,26 +117,43 @@ class Worker:
                 os.makedirs(COLLECT_FOLDER)
             if not time_almost_equal(START_HOUR, START_MIN):
                 continue
-            load_axf()
-            time.sleep(LOAD_AXF_INTERVAL)
-            port = get_mcu_virturl_com()
-            if not port:
+            self.port = get_mcu_virturl_com()
+            if not self.port:
                 continue
-            self.thread = CollectThread(port)
-            self.thread.start()
+            self._start_streamer_thread()
             return
 
+    def _start_streamer_thread(self):
+        print('Axf loading...')
+        load_axf()
+        time.sleep(LOAD_AXF_INTERVAL)
+        print('Thread started...')
+        self.thread = CollectThread(self.port)
+        self.thread.start()
+
     def run_stop_loop(self):
+        files_count = 0
         while True:
             time.sleep(LOOP_INTERVAL)
+
+            curr_files_count = count_collected_files()
+            if not curr_files_count > files_count:
+                print('Thread restarting...')
+                self.thread.stopped = True
+                kill_streamer_progresses()
+                self._start_streamer_thread()
+            files_count = curr_files_count
+
             if not time_almost_equal(STOP_HOUR, STOP_MIN):
                 continue
             else:
                 break
+
         time.sleep(LOOP_INTERVAL)
         self.thread.stopped = True
-        kill_progresses()
+        kill_streamer_progresses()
         handle_collect_folder()
+        print('Loop finished...')
 
 
 worker = Worker()
